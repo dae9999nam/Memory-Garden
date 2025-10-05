@@ -1,145 +1,97 @@
-import io
-import os
-from typing import List, Optional
-
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
-from PIL import Image
+from typing import List
+from transformers import AutoModelForVision2Seq, AutoTokenizer, AutoProcessor
 import torch
-from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer
+from PIL import Image
+import tempfile
+import os
 
-app = FastAPI(
-    title="Image Captioning API",
-    description="Generate image captions using Hugging Face ViT-GPT2 model.",
-    version="1.0.0",
+app = FastAPI()
+
+qwen_model_id = "Qwen/Qwen2.5-VL-7B-Instruct"
+qwen_model = AutoModelForVision2Seq.from_pretrained(
+    qwen_model_id,
+    dtype=torch.float16,
+    device_map="auto"
 )
+qwen_tokenizer = AutoTokenizer.from_pretrained(qwen_model_id)
+qwen_processor = AutoProcessor.from_pretrained(qwen_model_id)
 
-# Settings
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-MODEL_ID = os.getenv("MODEL_ID", "nlpconnect/vit-gpt2-image-captioning")
-MAX_LENGTH_DEFAULT = int(os.getenv("MAX_LENGTH", "16"))
-NUM_BEAMS_DEFAULT = int(os.getenv("NUM_BEAMS", "4"))
-BATCH_LIMIT = int(os.getenv("BATCH_LIMIT", "16"))  # safety for very large uploads
+short_prompt = """Write a 120–180 word micro‑story inspired by this photo for an older adult and their family. Describe the photo honestly, write the story to evoke gentle reminiscence and well‑being. Use warm, simple language, 2–3 sensory details, and avoid object lists. Use tentative phrasing for uncertain facts. Emphasize connection and small rituals."""
+long_prompt = """
+You are a compassionate storyteller. Using the attached photo, craft a 120–180 word micro‑story intended for an older adult and their family. The story should gently evoke memories, spark warm conversation, and support emotional well‑being.
 
-# Load model once at startup
-try:
-    model = VisionEncoderDecoderModel.from_pretrained(MODEL_ID)
-    feature_extractor = ViTImageProcessor.from_pretrained(MODEL_ID)
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-    # --- NEW: make GPT-2 padding explicit ---
-    if tokenizer.pad_token is None:
-        # use EOS as PAD for GPT-2-style decoders
-        tokenizer.pad_token = tokenizer.eos_token
-    
-    model.config.pad_token_id = tokenizer.pad_token_id
-    model.config.eos_token_id = tokenizer.eos_token_id
+Guidelines:
+- Focus on mood, place, season, and relationships; avoid listing objects.
+- Weave in 2–3 sensory details (sounds, scents, textures, light).
+- Use warm, respectful language and short, vivid sentences.
+- Avoid definitive claims about names, ages, or locations. Use gentle, tentative phrasing (perhaps, it seems, maybe).
+- If people appear, emphasize connection and small rituals rather than appearance.
+- Be inclusive and avoid stereotypes; balance nostalgia with quiet hope.
+- If text is clearly legible in the image, you may thoughtfully incorporate it.
+- If the scene is ambiguous, lean into universal themes (family, gatherings, journeys, everyday moments).
 
-    model.to(DEVICE)
-    model.eval()
-except Exception as e:
-    # If model fails to load, raise at startup
-    raise RuntimeError(f"Failed to load model '{MODEL_ID}': {e}") from e
+Output:
+- 1–2 paragraphs of story.
 
+Variants (pick one voice if you want to steer style):
+- Voice A (third‑person close): Tell the story from a gentle narrator’s view.
+- Voice B (first‑person elder): Write as if an older adult is recalling the moment in the photo.
+- Voice C (second person): Address a loved one directly, with tenderness and gratitude.
 
-def _generate_captions(
-    images: List[Image.Image],
-    max_length: int,
-    num_beams: int,
-) -> List[str]:
-    pixel_values = feature_extractor(images=images, return_tensors="pt", padding=True).pixel_values
-    pixel_values = pixel_values.to(DEVICE)
+Examples of style knobs you can add:
+- Tone: warm and hopeful; lightly bittersweet; playful nostalgia.
+- Era cues: hint at a decade only if strongly suggested by the image.
+- Cultural touch: include respectful, non‑stereotyped details only if clearly present.
 
-    output_ids = model.generate(
-        pixel_values,
-        max_length=max_length,
-        num_beams=num_beams,
-        pad_token_id=tokenizer.pad_token_id,
-        eos_token_id=tokenizer.eos_token_id,
+"""
+def generate_story_qwen(image_path, prompt=short_prompt): # use short_prompt by default
+    image = Image.open(image_path).convert("RGB")
+    messages = [
+        {"role": "user", "content": [
+            {"type": "image"},
+            {"type": "text", "text": prompt}
+        ]}
+    ]
+    text_prompt = qwen_processor.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True
     )
+    inputs = qwen_processor(text=[text_prompt], images=[image], return_tensors="pt").to("cuda")
+    output_ids = qwen_model.generate(**inputs, max_new_tokens=300)
+    generated_text = qwen_tokenizer.decode(
+        output_ids[0][inputs["input_ids"].shape[1]:],
+        skip_special_tokens=True
+    )
+    return generated_text.strip()
 
-    captions = tokenizer.batch_decode(output_ids, skip_special_tokens=True)
-    captions = [c.strip() for c in captions]
-    return captions
+@app.get("/")
+def read_root():
+    return {"Hello": "World"}
 
+@app.post("/generate-stories/")
+async def generate_stories(images: List[UploadFile] = File(...)):
+    results = []
+    for image_file in images:
+        # Save image temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+            contents = await image_file.read()
+            tmp.write(contents)
+            tmp_path = tmp.name
 
-@app.get("/health")
-def health():
-    return {
-        "status": "ok",
-        "model_id": MODEL_ID,
-        "device": DEVICE,
-        "defaults": {
-            "max_length": MAX_LENGTH_DEFAULT,
-            "num_beams": NUM_BEAMS_DEFAULT,
-        },
-    }
-
-
-@app.post("/caption")
-async def caption(
-    files: List[UploadFile] = File(..., description="One or more image files."),
-    max_length: Optional[int] = Query(
-        None, ge=1, le=128, description="Max token length for caption generation."
-    ),
-    num_beams: Optional[int] = Query(
-        None, ge=1, le=8, description="Beam count for beam search decoding."
-    ),
-):
-    if not files:
-        raise HTTPException(status_code=400, detail="No files uploaded.")
-
-    if len(files) > BATCH_LIMIT:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Too many files. Limit is {BATCH_LIMIT}.",
-        )
-
-    images: List[Image.Image] = []
-    filenames: List[str] = []
-
-    for f in files:
-        if not f.content_type or not f.content_type.startswith("image/"):
-            raise HTTPException(
-                status_code=415,
-                detail=f"Unsupported content type for file '{f.filename}'. Expected an image.",
-            )
         try:
-            content = await f.read()
-            img = Image.open(io.BytesIO(content))
-            img.load()  # verify image can be loaded
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            images.append(img)
-            filenames.append(f.filename or "unknown")
-        except Exception:
-            raise HTTPException(
-                status_code=400, detail=f"Failed to read image '{f.filename}'."
-            )
+            story = generate_story_qwen(tmp_path)
+        except Exception as e:
+            story = f"Error processing image: {str(e)}"
+        finally:
+            # Clean up temp file
+            os.remove(tmp_path)
 
-    use_max_length = max_length if max_length is not None else MAX_LENGTH_DEFAULT
-    use_num_beams = num_beams if num_beams is not None else NUM_BEAMS_DEFAULT
+        results.append({
+            "filename": image_file.filename,
+            "story": story
+        })
 
-    try:
-        captions = _generate_captions(
-            images=images,
-            max_length=use_max_length,
-            num_beams=use_num_beams,
-        )
-    except torch.cuda.OutOfMemoryError:
-        raise HTTPException(
-            status_code=503,
-            detail="Out of GPU memory. Reduce batch size or num_beams and try again.",
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Inference failed: {str(e)}"
-        )
-
-    results = [{"filename": name, "caption": cap} for name, cap in zip(filenames, captions)]
     return JSONResponse(content={"results": results})
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
