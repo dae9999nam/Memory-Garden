@@ -1,20 +1,27 @@
+from io import BytesIO
+from typing import List
+
+import torch
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
-from typing import List
-from transformers import AutoModelForVision2Seq, AutoTokenizer, AutoProcessor
-import torch
 from PIL import Image
-import tempfile
-import os
+from transformers import AutoModelForVision2Seq, AutoProcessor, AutoTokenizer
 
 app = FastAPI()
 
 qwen_model_id = "Qwen/Qwen2.5-VL-7B-Instruct"
-qwen_model = AutoModelForVision2Seq.from_pretrained(
-    qwen_model_id,
-    dtype=torch.float16,
-    device_map="auto"
-)
+model_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+model_kwargs = {}
+if model_device.type == "cuda":
+    model_kwargs.update({"torch_dtype": torch.float16, "device_map": "auto"})
+else:
+    model_kwargs.update({"torch_dtype": torch.float32})
+
+qwen_model = AutoModelForVision2Seq.from_pretrained(qwen_model_id, **model_kwargs)
+if model_device.type != "cuda":
+    qwen_model = qwen_model.to(model_device)
+
 qwen_tokenizer = AutoTokenizer.from_pretrained(qwen_model_id)
 qwen_processor = AutoProcessor.from_pretrained(qwen_model_id)
 
@@ -46,8 +53,18 @@ Examples of style knobs you can add:
 - Cultural touch: include respectful, non‑stereotyped details only if clearly present.
 
 """
-def generate_story_qwen(image_path, prompt=short_prompt): # use short_prompt by default
-    image = Image.open(image_path).convert("RGB")
+def generate_story_qwen(image_bytes: bytes, prompt: str = short_prompt) -> str:
+    """Generate a story for a single image.
+
+    Args:
+        image_bytes: Raw bytes of the uploaded image.
+        prompt: Prompt text used when querying the model.
+
+    Returns:
+        The generated story as a string.
+    """
+
+    image = Image.open(BytesIO(image_bytes)).convert("RGB")
     messages = [
         {"role": "user", "content": [
             {"type": "image"},
@@ -59,8 +76,12 @@ def generate_story_qwen(image_path, prompt=short_prompt): # use short_prompt by 
         tokenize=False,
         add_generation_prompt=True
     )
-    inputs = qwen_processor(text=[text_prompt], images=[image], return_tensors="pt").to("cuda")
-    output_ids = qwen_model.generate(**inputs, max_new_tokens=300)
+    inputs = qwen_processor(text=[text_prompt], images=[image], return_tensors="pt")
+    if model_device.type == "cuda":
+        inputs = {k: v.to(model_device) for k, v in inputs.items()}
+
+    with torch.no_grad():
+        output_ids = qwen_model.generate(**inputs, max_new_tokens=300)
     generated_text = qwen_tokenizer.decode(
         output_ids[0][inputs["input_ids"].shape[1]:],
         skip_special_tokens=True
@@ -75,19 +96,15 @@ def read_root():
 async def generate_stories(images: List[UploadFile] = File(...)):
     results = []
     for image_file in images:
-        # Save image temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-            contents = await image_file.read()
-            tmp.write(contents)
-            tmp_path = tmp.name
-
+        contents = await image_file.read()
         try:
-            story = generate_story_qwen(tmp_path)
+            if not contents:
+                raise ValueError("Uploaded file is empty.")
+            story = generate_story_qwen(contents)
         except Exception as e:
             story = f"Error processing image: {str(e)}"
         finally:
-            # Clean up temp file
-            os.remove(tmp_path)
+            await image_file.close()
 
         results.append({
             "filename": image_file.filename,
@@ -95,3 +112,4 @@ async def generate_stories(images: List[UploadFile] = File(...)):
         })
 
     return JSONResponse(content={"results": results})
+
