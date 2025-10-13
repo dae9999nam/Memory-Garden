@@ -1,0 +1,29 @@
+{
+  "name": "memory-garden-server",
+  "version": "1.0.0",
+  "description": "Express API for generating and managing image-based stories with MongoDB and Ollama",
+  "main": "app/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node app/server.js",
+    "dev": "nodemon app/server.js",
+    "lint": "eslint ."
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.6.7",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "mongodb": "^6.5.0",
+    "multer": "^1.4.5-lts.1"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "eslint-plugin-import": "^2.29.1",
+    "eslint-plugin-n": "^16.6.2",
+    "eslint-plugin-promise": "^6.4.0",
+    "nodemon": "^3.1.0"
+  }
+}
