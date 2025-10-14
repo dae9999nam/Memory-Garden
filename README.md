@@ -4,6 +4,7 @@ A Node.js/Express service that turns image uploads and contextual metadata into 
 
 ## Features
 - Upload up to ten photos alongside date, place, weather, and optional notes.
+- Built-in web form at `/` for uploading photos and generating stories without an external client.
 - Persist photo binaries in MongoDB GridFS with metadata and prompts in a `stories` collection.
 - Generate descriptive narratives with Ollama and automatically refresh stories when photos change.
 - Retrieve stories with downloadable photo links or selectively delete prompts, stories, or photo sets.
@@ -26,6 +27,8 @@ A Node.js/Express service that turns image uploads and contextual metadata into 
    npm run dev
    ```
    The API listens on `http://localhost:8000` by default.
+
+4. **Open the Memory Garden uploader** – Navigate to `http://localhost:8000/` to access the bundled HTML interface. Select your photos, fill in the contextual fields, and click **Generate Story** to submit them to the `/stories` endpoint.
 
 ## API reference
 ### Create a story
