@@ -3,6 +3,7 @@
 A Node.js/Express service that turns image uploads and contextual metadata into narrated stories using MongoDB for storage and an Ollama vision-language model for generation.
 
 ## Features
+
 - Upload up to ten photos alongside date, place, weather, and optional notes.
 - Built-in web form at `/` for uploading photos and generating stories without an external client.
 - Persist photo binaries in MongoDB GridFS with metadata and prompts in a `stories` collection.
@@ -10,6 +11,7 @@ A Node.js/Express service that turns image uploads and contextual metadata into 
 - Retrieve stories with downloadable photo links or selectively delete prompts, stories, or photo sets.
 
 ## Getting started
+
 1. **Install dependencies**
    ```bash
    npm install
@@ -23,18 +25,25 @@ A Node.js/Express service that turns image uploads and contextual metadata into 
    PORT=8000
    ```
 3. **Run the server**
+
    ```bash
+    # To start mongodb/brew/mongodb-community now and restart at login:
+   brew services start mongodb/brew/mongodb-community
    npm run dev
    ```
+
    The API listens on `http://localhost:8000` by default.
 
 4. **Open the Memory Garden uploader** – Navigate to `http://localhost:8000/` to access the bundled HTML interface. Select your photos, fill in the contextual fields, and click **Generate Story** to submit them to the `/stories` endpoint.
 
 ## API reference
+
 ### Create a story
+
 `POST /stories`
 
 Multipart form fields:
+
 - `photos` – one or more image files (max 10, up to 15 MB each)
 - `date` – when the photos were taken (ISO string or free text)
 - `place` – where the photos were taken
@@ -42,6 +51,7 @@ Multipart form fields:
 - `notes` – optional extra context for the storyteller
 
 Response example:
+
 ```json
 {
   "id": "665f75c6c5f4d3e3c5a17c09",
@@ -69,6 +79,7 @@ Response example:
 ```
 
 ### Update photos and regenerate
+
 `PUT /stories/:id/photos`
 
 - Accepts the same multipart payload as `POST /stories` (photos required).
@@ -76,19 +87,23 @@ Response example:
 - Replaces all stored photos, regenerates the prompt and story, and deletes superseded GridFS files.
 
 ### Retrieve a story
+
 `GET /stories/:id`
 
 Returns the saved prompt, context, generated story, and photo descriptors including download URLs.
 
 ### Download a stored photo
+
 `GET /stories/:id/photos/:photoId`
 
 Streams the binary image content directly from GridFS.
 
 ### Delete
+
 `DELETE /stories/:id`
 
 Supports targeted deletions via the optional `target` query parameter:
+
 - `target=photos` – delete photos only
 - `target=prompt` – remove the stored prompt text
 - `target=story` – clear the generated story text
@@ -97,6 +112,7 @@ Supports targeted deletions via the optional `target` query parameter:
 All photo deletions remove the underlying GridFS files.
 
 ## Development notes
+
 - Ollama requests are synchronous with a 60 second timeout; configure asynchronous workers if you expect longer generations.
 - `multer` stores uploads in memory. For larger uploads consider swapping to disk storage before piping to GridFS.
 - Lint the project with `npm run lint` once dependencies are installed.
