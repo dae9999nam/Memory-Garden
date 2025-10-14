@@ -1,5 +1,7 @@
 import express from 'express';
 import dotenv from 'dotenv';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import storiesRouter from './routes/stories.js';
 import { connectMongo } from './db/mongo.js';
 import { multerErrorHandler } from './middleware/uploads.js';
@@ -7,7 +9,11 @@ import { multerErrorHandler } from './middleware/uploads.js';
 dotenv.config();
 
 const app = express();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const publicDir = path.resolve(__dirname, '../public');
+
 app.use(express.json({ limit: '10mb' }));
+app.use(express.static(publicDir));
 
 app.use('/stories', storiesRouter);
 app.use(multerErrorHandler);
@@ -26,15 +32,18 @@ app.use((err, req, res, next) => {
 
 const port = process.env.PORT || 8000;
 
-connectMongo()
-  .then(() => {
+async function startServer () {
+  try {
+    await connectMongo();
     app.listen(port, () => {
       console.log(`Memory Garden API listening on port ${port}`);
     });
-  })
-  .catch((error) => {
+  } catch (error) {
     console.error('Failed to start server', error);
-    process.exit(1);
-  });
+    process.exitCode = 1;
+  }
+}
+
+startServer();
 
 export default app;
