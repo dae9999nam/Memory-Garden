@@ -2,3 +2,10 @@ node_modules/
 .env
 npm-debug.log*
 .DS_Store
+.venv
+__pycache__
+FastAPI App/uploads/
+FastAPI App/__pycache__/
+.pyc
+docs/
+Nodejs
