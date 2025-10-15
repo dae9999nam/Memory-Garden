@@ -1,15 +1,16 @@
 # Image captioning model 
 import ollama
-# import json
+import json
 # import requests
 import base64
 # FastAPI imports
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form
-from fastapi.concurrency import run_in_threadpool
+from fastapi import HTTPException, File, UploadFile, Form, Query
+from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Sequence, Tuple, Iterable
 from uuid import uuid4
+from datetime import datetime
 
 # initiate ollama client
 ollama_client = ollama.Client()
@@ -44,12 +45,21 @@ app = FastAPI(title="Memory Garden FastAPI", description="Accepts image input an
 # Create upload directory for storing uploaded photos
 UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True, parents=True)
+# Data directory for storing stories
+DATA_DIR = Path(__file__).resolve().parent / "data"
+STORIES_FILE = DATA_DIR / "stories.json"
 
 # Simple file-system storage that can be swapped for MongoDB in the future.
 class PhotoStorage:
     def __init__(self, base_dir: Path) -> None:
         self._base_dir = base_dir
 
+    def _resolve_path(self, path: str) -> Path:
+        candidate = Path(path)
+        if candidate.is_absolute():
+            return candidate
+        return self._base_dir / candidate
+    
     # Save uploads to disk and return their metadata alongside the raw bytes.
     async def persist(self, photos: Sequence[UploadFile]) -> List[Tuple["StoredPhoto", bytes]]:
         stored_photos: List[Tuple[StoredPhoto, bytes]] = []
@@ -64,13 +74,15 @@ class PhotoStorage:
             # Use original file extension or default to .jpg
             extension = Path(upload.filename or "").suffix or ".jpg"
             # Ensure unique filenames using UUIDs
-            generated_name = f"{uuid4().hex}{extension}"
+            photo_id = uuid4().hex
+            generated_name = f"{photo_id}{extension}"
             destination = self._base_dir / generated_name
             destination.write_bytes(contents)
 
             stored_photos.append(
                 (
                     StoredPhoto(
+                        id=photo_id,
                         filename=upload.filename or generated_name,
                         content_type=upload.content_type or "application/octet-stream",
                         size=len(contents),
@@ -81,12 +93,34 @@ class PhotoStorage:
             )
 
         return stored_photos
+    # Load the raw bytes of a stored photo
+    def load_bytes(self, photo: "StoredPhoto") -> bytes:
+        return self._resolve_path(photo.path).read_bytes()
+    # Get the file path for a stored photo
+    def get_path(self, photo: "StoredPhoto") -> Path:
+        return self._resolve_path(photo.path)
+    # Delete a single photo
+    def delete(self, photo: "StoredPhoto") -> None:
+        try:
+            self._resolve_path(photo.path).unlink()
+        except FileNotFoundError:
+            return
+    # Delete multiple photos
+    def delete_many(self, photos: Sequence["StoredPhoto"]) -> None:
+        for photo in photos:
+            self.delete(photo)
+    # Delete all files in the storage directory (useful for testing)
+    def delete_all(self) -> None:
+        for child in self._base_dir.iterdir():
+            if child.is_file():
+                child.unlink()
 
 photo_storage = PhotoStorage(UPLOAD_DIR)
 story_generator = OllamaStoryTeller(ollama_client)
 
 # Metadata model for the uploaded photos
 class StoredPhoto(BaseModel):
+    id: str
     filename: str
     content_type: str
     size: int
