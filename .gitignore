@@ -9,3 +9,4 @@ FastAPI App/__pycache__/
 .pyc
 docs/
 Nodejs
+data/

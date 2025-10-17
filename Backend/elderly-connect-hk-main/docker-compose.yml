@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: mongo_container
+    restart: always
+    ports:
+      - "27017:27017"      # exposes MongoDB to localhost
+    volumes:
+      - mongo_data:/data/db
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.backend
+    container_name: backend_container
+    depends_on:
+      - mongodb
+    environment:
+      - MONGO_URI=mongodb://mongo_container:27017/
+    volumes:
+      - ./backend:/app
+    command: ["sleep", "infinity"]
+
+volumes:
+  mongo_data:
