@@ -83,14 +83,14 @@ ollama pull llava
 
 ### 🔄 Generate Story
 
-**`POST /generate-story`**
+**`POST /upload/stories`**
 
 Transform your photos into a beautiful narrative with contextual information.
 
 #### Request Format
 
 ```bash
-curl -X POST "http://localhost:8000/generate-story" \
+curl -X POST "http://localhost:8000/upload/stories" \
   -F "photos=@photo1.jpg" \
   -F "photos=@photo2.jpg" \
   -F "date=2024-10-15" \
