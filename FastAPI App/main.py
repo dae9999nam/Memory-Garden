@@ -1,19 +1,27 @@
 # Image captioning model 
 import ollama
-import json
-# import requests
+# Image Decoding and Encoding
 import base64
-# FastAPI imports
+import json
+# File system path handling, UUID generation and datetime
 from pathlib import Path
+from uuid import uuid4
+from datetime import datetime, timezone
+# FastAPI imports
 from fastapi import HTTPException, File, UploadFile, Form, Query
 from fastapi import FastAPI
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, StreamingResponse
+# Pydantic for data modeling
 from pydantic import BaseModel
+# Threading for safe file operations
 from threading import Lock
-from fastapi.responses import FileResponse
+# Typing imports
 from typing import List, Sequence, Tuple, Iterable, Optional, Union
-from uuid import uuid4
-from datetime import datetime, timezone
+# Translation
+from googletrans import Translator
+# Text-to-speech (TTS)
+from gtts import gTTS
 
 # initiate ollama client
 ollama_client = ollama.Client()
@@ -50,7 +58,10 @@ UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True, parents=True)
 # Data directory for storing stories
 DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR.mkdir(exist_ok=True, parents=True)
 STORIES_FILE = DATA_DIR / "stories.json"
+AUDIO_DIR = Path(__file__).resolve().parent / "audio"
+AUDIO_DIR.mkdir(exist_ok=True, parents=True)
 
 # Simple file-system storage that can be swapped for MongoDB in the future.
 class PhotoStorage:
@@ -122,6 +133,7 @@ class PhotoStorage:
 
 photo_storage = PhotoStorage(UPLOAD_DIR)
 story_generator = OllamaStoryTeller(ollama_client)
+translator = Translator()
 
 # Metadata model for the uploaded photos
 class StoredPhoto(BaseModel):
@@ -186,7 +198,7 @@ class StoryRepository:
         temp_path = self._storage_path.with_suffix(".tmp")
         temp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         temp_path.replace(self._storage_path)
-    # Serialize and deserialize StoryRecord objects to/from dicts for JSON storage    
+    # Serialize and deserialize StoryRecord objects to/from dicts for JSON storage
     def _serialize(self, record: StoryRecord) -> dict:
         payload = record.model_dump()  # This is correct - record should be a StoryRecord
         payload["created_at"] = record.created_at.isoformat()
@@ -198,6 +210,14 @@ class StoryRepository:
         data["created_at"] = datetime.fromisoformat(data["created_at"])
         data["updated_at"] = datetime.fromisoformat(data["updated_at"])
         return StoryRecord(**data)
+    # add a new story to the repository
+    def add(self, record: StoryRecord) -> StoryResponse:
+        serialized = self._serialize(record)
+        with self._lock:
+            data = self._read_all()
+            data.append(serialized)
+            self._write_all(data)
+        return record
     # List all stored stories
     def list(self) -> List[StoryRecord]:
         with self._lock:
@@ -274,10 +294,40 @@ def _parse_id_list(value: Optional[Union[str, Sequence[str]]]) -> List[str]:
     
     normalized = normalize(value)
     return [normalized] if normalized else []
-
+# Convert StoryRecord to StoryResponse
 def _story_to_response(record: StoryRecord, message: Optional[str] = None) -> StoryResponse:
     payload = record.model_dump()
     return StoryResponse(message=message, **payload)
+# Async function to translate text to Cantonese
+async def _translate_to_cantonese(text: str) -> str:
+    async with translator:
+        result = await translator.translate(text, dest='yue')
+        return result.text
+# Async function to synthesize Cantonese speech and save to file
+async def _synthesize_cantonese_speech(text: str, output_path: Path) -> Path:
+    lan = 'yue'
+    tts = gTTS(text=text, lang=lan, slow=False)
+    tts.save(output_path)
+    return output_path
+
+def _get_audio_file_path(story_id: str) -> Path:
+    return AUDIO_DIR / f"{story_id}_cantonese.mp3"
+
+def _delete_audio_file(story_id: str) -> None:
+    audio_path = _get_audio_file_path(story_id)
+    try:
+        audio_path.unlink()
+    except FileNotFoundError:
+        pass
+async def _ensure_cantonese_audio_exits(story: StoryRecord) -> Path:
+    if not story.story:
+        raise HTTPException(status_code=404, detail="No story text available for this story.")
+    audio_path = _get_audio_file_path(story.id)
+    if audio_path.exists():
+        return audio_path
+    cantonese_text = await _translate_to_cantonese(story.story)
+    return await _synthesize_cantonese_speech(cantonese_text, audio_path)
+
 # Endpoint to upload photos and generate a story
 @app.post("/upload/stories", response_model=StoryResponse)
 async def upload_photos_and_generate_story(
@@ -313,17 +363,14 @@ async def upload_photos_and_generate_story(
         created_at=current_time,
         updated_at=current_time,
     )
-    await run_in_threadpool(story_repository.get, story_record)
+    await run_in_threadpool(story_repository.add, story_record)
     return _story_to_response(story_record, message="Photo uploaded and story generated successfully.")
-    # return StoryResponse(
-    #     message="Photo uploaded and story generated successfully.",
-    #     **story_record.model_dump()
-    # )
+    
 # Endpoint to list all stories
 @app.get("/stories", response_model=List[StoryResponse])
 async def list_stories() -> List[StoryResponse]:
     stories = await run_in_threadpool(story_repository.list)
-    return stories
+    return [_story_to_response(story) for story in stories]
 # Endpoint to get a specific story by ID
 @app.get("/stories/{story_id}", response_model=StoryResponse)
 async def get_story(story_id: str) -> StoryResponse:
@@ -331,6 +378,28 @@ async def get_story(story_id: str) -> StoryResponse:
     if not story:
         raise HTTPException(status_code=404, detail=f"Story with ID {story_id} not found.")
     return _story_to_response(story)
+# Endpoint to get Cantonese audio for a specific story
+@app.get("/stories/{story_id}/audio")
+async def get_story_cantonese_audio(story_id: str):
+    story = await run_in_threadpool(story_repository.get, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="Story not found.")
+    audio_path = await _ensure_cantonese_audio_exits(story)
+    audio_filename = f"{story.id}_cantonese.mp3"
+    return FileResponse(audio_path, media_type="audio/mpeg", filename=audio_filename)
+# Endpoint to stream Cantonese audio for a specific story
+@app.get("/stories/{story_id}/audio/stream")
+async def stream_story_cantonese_audio(story_id: str):
+    story = await run_in_threadpool(story_repository.get, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="Story not found.")
+    audio_path = await _ensure_cantonese_audio_exits(story)
+    audio_filename = f"{story.id}_cantonese.mp3"
+    def iterfile():
+        with audio_path.open("rb") as file_like:
+            yield from file_like
+    return StreamingResponse(iterfile(), media_type="audio/mpeg", headers={"Content-Disposition": f"inline; filename={audio_filename}"})
+
 # Endpoint to list photos for a specific story
 @app.get("/stories/{story_id}/photos", response_model=List[StoredPhoto])
 async def list_story_photos(story_id: str) -> List[StoredPhoto]:
@@ -397,9 +466,8 @@ async def update_story_photos(
     encoded_images = _encode_images([*kept_bytes, *new_bytes])
     story_text = story_generator.generate_story(prompt=prompt, encoded_images=encoded_images)
 
-    if not new_photos_with_bytes:
-            await run_in_threadpool(photo_storage.delete_many, [photo for photo, _ in new_photos_with_bytes])
-    
+    await run_in_threadpool(_delete_audio_file, story.id)
+
     removed_photos = [photo for photo in story.photos if photo.id not in keep_set]
     if removed_photos:
         await run_in_threadpool(photo_storage.delete_many, removed_photos)
@@ -438,8 +506,8 @@ async def delete_story_photos(
     remaining_photos = [photo for photo in story.photos if photo.id not in ids_to_remove]
 
     await run_in_threadpool(photo_storage.delete_many, photos_to_delete)
-
-    updated_record = story.copy(
+    await run_in_threadpool(_delete_audio_file, story.id)
+    updated_record = story.model_copy(
         update={
             "photos": remaining_photos,
             "story": None,

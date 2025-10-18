@@ -8,5 +8,8 @@ FastAPI App/uploads/
 FastAPI App/__pycache__/
 .pyc
 docs/
-Nodejs
+
 data/
+google-cloud-sdk/
+*.tar.gz
+*.mp3
