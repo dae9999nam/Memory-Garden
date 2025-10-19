@@ -3,6 +3,7 @@ import ollama
 # Image Decoding and Encoding
 import base64
 import json
+import os
 # File system path handling, UUID generation and datetime
 from pathlib import Path
 from uuid import uuid4
@@ -14,14 +15,18 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 # Pydantic for data modeling
 from pydantic import BaseModel
-# Threading for safe file operations
-from threading import Lock
 # Typing imports
 from typing import List, Sequence, Tuple, Iterable, Optional, Union
 # Translation
 from googletrans import Translator
 # Text-to-speech (TTS)
 from gtts import gTTS
+# BSON ObjectId handling
+from bson import ObjectId
+# BSON InvalidId exception
+from bson.errors import InvalidId
+from pymongo.collection import Collection
+import importlib.util
 
 # initiate ollama client
 ollama_client = ollama.Client()
@@ -59,9 +64,36 @@ UPLOAD_DIR.mkdir(exist_ok=True, parents=True)
 # Data directory for storing stories
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DATA_DIR.mkdir(exist_ok=True, parents=True)
-STORIES_FILE = DATA_DIR / "stories.json"
+# STORIES_FILE = DATA_DIR / "stories.json"
 AUDIO_DIR = Path(__file__).resolve().parent / "audio"
 AUDIO_DIR.mkdir(exist_ok=True, parents=True)
+
+def _load_elder_db() -> type:
+    module_path = (
+        Path(__file__).resolve().parents[1]
+        / "Backend"
+        / "backend"
+        / "agents"
+        / "utils"
+        / "mongo.py"
+    )
+    spec = importlib.util.spec_from_file_location("memory_garden_elder_mongo", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load ElderDB from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    if not hasattr(module, "ElderDB"):
+        raise ImportError("ElderDB class not found in mongo.py")
+    return module.ElderDB
+
+ElderDB = _load_elder_db()
+
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "community_platform")
+MONGODB_COLLECTION_NAME = os.getenv("MONGODB_COLLECTION_NAME", "stories")
+
+if not os.environ.get("MONGODB_URI"):
+    os.environ["MONGODB_URI"] = MONGODB_URI
 
 # Simple file-system storage that can be swapped for MongoDB in the future.
 class PhotoStorage:
@@ -132,6 +164,7 @@ class PhotoStorage:
     #             child.unlink()
 
 photo_storage = PhotoStorage(UPLOAD_DIR)
+elder_db = ElderDB()
 story_generator = OllamaStoryTeller(ollama_client)
 translator = Translator()
 
@@ -152,7 +185,7 @@ class MemoryResponse(BaseModel):
 
 # Response model including stories for each photo
 class StoryRecord(BaseModel):
-    id: str
+    id: Optional[str] = None
     date: str
     weather: str
     location: str
@@ -179,77 +212,128 @@ class StoryResponse(BaseModel):
         json_encoders = {datetime: lambda value: value.isoformat()}
 
 class StoryRepository:
-    def __init__(self, storage_path: Path) -> None:
-        self._storage_path = storage_path
-        self._lock = Lock()
-        self._storage_path.parent.mkdir(exist_ok=True, parents=True)
-        if not self._storage_path.exists():
-            self._storage_path.write_text("[]", encoding="utf-8")
+    def __init__(self, collection: Collection) -> None:
+        self._collection = collection
+
     # Read all stories from the JSON file
-    def _read_all(self) -> List[dict]:
-        if not self._storage_path.exists():
-            return []
-        raw = self._storage_path.read_text(encoding="utf-8")
-        if not raw.strip():
-            return []
-        return json.loads(raw)
-    # Write all stories to the JSON file atomically
-    def _write_all(self, data: List[dict]) -> None:
-        temp_path = self._storage_path.with_suffix(".tmp")
-        temp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        temp_path.replace(self._storage_path)
+    # def _read_all(self) -> List[dict]:
+    #     if not self._storage_path.exists():
+    #         return []
+    #     raw = self._storage_path.read_text(encoding="utf-8")
+    #     if not raw.strip():
+    #         return []
+    #     return json.loads(raw)
+    # # Write all stories to the JSON file atomically
+    # def _write_all(self, data: List[dict]) -> None:
+    #     temp_path = self._storage_path.with_suffix(".tmp")
+    #     temp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    #     temp_path.replace(self._storage_path)
     # Serialize and deserialize StoryRecord objects to/from dicts for JSON storage
     def _serialize(self, record: StoryRecord) -> dict:
-        payload = record.model_dump()  # This is correct - record should be a StoryRecord
-        payload["created_at"] = record.created_at.isoformat()
-        payload["updated_at"] = record.updated_at.isoformat()
+        payload = record.model_dump(mode="python", exclude_none=True)
+        payload.pop("id", None)  # Remove id if None
         return payload
     # Deserialize a dict to a StoryRecord object
     def _deserialize(self, payload: dict) -> StoryRecord:
         data = payload.copy()
-        data["created_at"] = datetime.fromisoformat(data["created_at"])
-        data["updated_at"] = datetime.fromisoformat(data["updated_at"])
+        mongo_id = data.pop("_id", None)
+        if mongo_id is not None:
+            data["id"] = str(mongo_id)
         return StoryRecord(**data)
     # add a new story to the repository
-    def add(self, record: StoryRecord) -> StoryResponse:
-        serialized = self._serialize(record)
-        with self._lock:
-            data = self._read_all()
-            data.append(serialized)
-            self._write_all(data)
-        return record
+    # def add(self, record: StoryRecord) -> StoryResponse:
+    #     serialized = self._serialize(record)
+    #     with self._lock:
+    #         data = self._read_all()
+    #         data.append(serialized)
+    #         self._write_all(data)
+    #     return record
+    # # List all stored stories
+    # def list(self) -> List[StoryRecord]:
+    #     with self._lock:
+    #         data = self._read_all()
+    #     return [self._deserialize(item) for item in data]
+    # # Get a specific story by ID
+    # def get(self, story_id: str) -> Optional[StoryRecord]:
+    #     with self._lock:
+    #         data = self._read_all()
+    #     for item in data:
+    #         if item.get("id") == story_id:
+    #             return self._deserialize(item)
+    #     return None
+    async def add(self, record: StoryRecord) -> StoryRecord:
+        def _insert() -> str:
+            result = self._collection.insert_one(self._serialize(record))
+            return str(result.inserted_id)
+        inserted_id = await run_in_threadpool(_insert)
+        return record.model_copy(update={"id": inserted_id})
     # List all stored stories
-    def list(self) -> List[StoryRecord]:
-        with self._lock:
-            data = self._read_all()
-        return [self._deserialize(item) for item in data]
+    async def list(self) -> List[StoryRecord]:
+        def _fetch_all() -> List[StoryRecord]:
+            return [self._deserialize(document) for document in self._collection.find({})]
+
+        return await run_in_threadpool(_fetch_all)
+
     # Get a specific story by ID
-    def get(self, story_id: str) -> Optional[StoryRecord]:
-        with self._lock:
-            data = self._read_all()
-        for item in data:
-            if item.get("id") == story_id:
-                return self._deserialize(item)
-        return None
+    async def get(self, story_id: str) -> Optional[StoryRecord]:
+        try:
+            object_id = ObjectId(story_id)
+        except (InvalidId, TypeError):
+            return None
+        document = await run_in_threadpool(self._collection.find_one, {"_id": object_id})
+        if not document:
+            return None
+        return self._deserialize(document)
     # Update an existing story
-    def update(self, record: StoryRecord) -> None:
-        serialized = self._serialize(record)
-        with self._lock:
-            data = self._read_all()
-            for index, item in enumerate(data):
-                if item.get("id") == record.id:
-                    data[index] = serialized
-                    self._write_all(data)
-                    return
-        raise KeyError(f"Story {record.id} not found")
+    async def update(self, record: StoryRecord) -> None:
+        if not record.id:
+            raise KeyError("Story ID is required for update")
+        try:
+            object_id = ObjectId(record.id)
+        except InvalidId as exc:
+            raise KeyError("Story ID is invalid") from exc
+        result = await run_in_threadpool(
+            self._collection.replace_one,
+            {"_id": object_id},
+            self._serialize(record),
+            upsert=False,
+        )
+        if result.matched_count == 0:
+            raise KeyError(f"Story {record.id} not found")
+    
+    async def ensure_indexes(self) -> None:
+        await run_in_threadpool(self._collection.create_index, "created_at")
+    
+    # def update(self, record: StoryRecord) -> None:
+    #     serialized = self._serialize(record)
+    #     with self._lock:
+    #         data = self._read_all()
+    #         for index, item in enumerate(data):
+    #             if item.get("id") == record.id:
+    #                 data[index] = serialized
+    #                 self._write_all(data)
+    #                 return
+    #     raise KeyError(f"Story {record.id} not found")
 
 # Initialize the story repository
-story_repository = StoryRepository(STORIES_FILE)
+story_collection = elder_db.connect_collection(db_name=MONGODB_DB_NAME, collection_name=MONGODB_COLLECTION_NAME)
+
+if story_collection is None:
+    raise RuntimeError("Failed to connect to the MongoDB collection for stories.")
+story_repository = StoryRepository(story_collection)
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    await story_repository.ensure_indexes()
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    elder_db.close_connection()
 
 
 @app.get("/")
 def read_root():
-    return {"message": "Welcome to the Memory Garden FastAPI. Use the /upload endpoint to upload photos and metadata."}
+    return {"message": "Welcome to the Memory Garden FastAPI. Use the endpoints to interact with your stories."}
 
 # Helper function to build the story prompt
 def _build_story_prompt(*, date: str, weather: str, location: str) -> str:
@@ -343,18 +427,10 @@ async def upload_photos_and_generate_story(
     stored_photos = [stored for stored, _ in stored_photos_with_bytes]  # Unpack stored photos
     prompt = _build_story_prompt(date=date, weather=weather, location=location)
     encoded_images = _encode_images(contents for _, contents in stored_photos_with_bytes)
-
-    # Generate the story using Ollama
     story_text = story_generator.generate_story(prompt=prompt, encoded_images=encoded_images)
-    # try: 
-    #     story_text = story_generator.generate_story(prompt=prompt, encoded_images=encoded_images)
-    # except HTTPException:
-    #     await run_in_threadpool(photo_storage.delete_many, [photo for photo, _ in stored_photos_with_bytes])
-    #     raise
     current_time = datetime.now(timezone.utc)
     
     story_record = StoryRecord(
-        id=uuid4().hex,
         date=date,
         weather=weather,
         location=location,
@@ -363,34 +439,40 @@ async def upload_photos_and_generate_story(
         created_at=current_time,
         updated_at=current_time,
     )
-    await run_in_threadpool(story_repository.add, story_record)
+    # await run_in_threadpool(story_repository.add, story_record)
+    story_record = await story_repository.add(story_record)
     return _story_to_response(story_record, message="Photo uploaded and story generated successfully.")
     
 # Endpoint to list all stories
 @app.get("/stories", response_model=List[StoryResponse])
 async def list_stories() -> List[StoryResponse]:
-    stories = await run_in_threadpool(story_repository.list)
+    # stories = await run_in_threadpool(story_repository.list)
+    stories = await story_repository.list()
     return [_story_to_response(story) for story in stories]
+
 # Endpoint to get a specific story by ID
 @app.get("/stories/{story_id}", response_model=StoryResponse)
 async def get_story(story_id: str) -> StoryResponse:
-    story = await run_in_threadpool(story_repository.get, story_id)
+    # story = await run_in_threadpool(story_repository.get, story_id)
+    story = await story_repository.get(story_id)
     if not story:
         raise HTTPException(status_code=404, detail=f"Story with ID {story_id} not found.")
     return _story_to_response(story)
+
 # Endpoint to get Cantonese audio for a specific story
 @app.get("/stories/{story_id}/audio")
 async def get_story_cantonese_audio(story_id: str):
-    story = await run_in_threadpool(story_repository.get, story_id)
+    story = await story_repository.get(story_id)
     if not story:
         raise HTTPException(status_code=404, detail="Story not found.")
     audio_path = await _ensure_cantonese_audio_exits(story)
     audio_filename = f"{story.id}_cantonese.mp3"
     return FileResponse(audio_path, media_type="audio/mpeg", filename=audio_filename)
+
 # Endpoint to stream Cantonese audio for a specific story
 @app.get("/stories/{story_id}/audio/stream")
 async def stream_story_cantonese_audio(story_id: str):
-    story = await run_in_threadpool(story_repository.get, story_id)
+    story = await story_repository.get(story_id)
     if not story:
         raise HTTPException(status_code=404, detail="Story not found.")
     audio_path = await _ensure_cantonese_audio_exits(story)
@@ -403,14 +485,14 @@ async def stream_story_cantonese_audio(story_id: str):
 # Endpoint to list photos for a specific story
 @app.get("/stories/{story_id}/photos", response_model=List[StoredPhoto])
 async def list_story_photos(story_id: str) -> List[StoredPhoto]:
-    story = await run_in_threadpool(story_repository.get, story_id)
+    story = await story_repository.get(story_id)
     if not story:
         raise HTTPException(status_code=404, detail="Story not found.")
     return story.photos
 # Endpoint to download a specific photo from a story
 @app.get("/stories/{story_id}/photos/{photo_id}")
 async def download_story_photo(story_id: str, photo_id: str):
-    story = await run_in_threadpool(story_repository.get, story_id)
+    story = await story_repository.get(story_id)
     if not story:
         raise HTTPException(status_code=404, detail="Story not found.")
     target = next((photo for photo in story.photos if photo.id == photo_id), None)
@@ -430,7 +512,7 @@ async def update_story_photos(
     keep_photo_ids: Optional[str] = Form(None),
     photos: Optional[List[UploadFile]] = File(None, description="Optional new photos to include"),
 ) -> StoryResponse:
-    story = await run_in_threadpool(story_repository.get, story_id)
+    story = await story_repository.get(story_id)
     if not story:
         raise HTTPException(status_code=404, detail="Story not found.")
 
@@ -482,7 +564,7 @@ async def update_story_photos(
             "updated_at": datetime.now(timezone.utc)
         }
     )
-    await run_in_threadpool(story_repository.update, updated_record)
+    await story_repository.update(updated_record)
 
     return _story_to_response(updated_record, message="Story updated successfully.")
 # Endpoint to delete specific photos from a story
@@ -491,7 +573,7 @@ async def delete_story_photos(
     story_id: str,
     photo_ids: Optional[Union[str, List[str]]] = Query(None, alias="photoIds"),
 ) -> StoryRecord:
-    story = await run_in_threadpool(story_repository.get, story_id)
+    story = await story_repository.get(story_id)
     if not story:
         raise HTTPException(status_code=404, detail="Story not found.")
 
@@ -511,8 +593,8 @@ async def delete_story_photos(
         update={
             "photos": remaining_photos,
             "story": None,
-            "updated_at": datetime.utcnow(),
+            "updated_at": datetime.now(timezone.utc),
         }
     )
-    await run_in_threadpool(story_repository.update, updated_record)
+    await story_repository.update(updated_record)
     return updated_record
