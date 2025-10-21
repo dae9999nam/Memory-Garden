@@ -1,8 +1,0 @@
-fastapi
-pydantic
-uvicorn[standard]
-ollama
-python-multipart
-# google-cloud-texttospeech
-googletrans
-gtts
