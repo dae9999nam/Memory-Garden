@@ -1,7 +1,0 @@
-langchain
-langchain_ollama
-sentence-transformers
-faiss-cpu
-numpy
-pymongo
-dotenv
