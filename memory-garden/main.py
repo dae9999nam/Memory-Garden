@@ -55,7 +55,7 @@ class OllamaStoryTeller:
         # Parse the response to extract the story text
         return response.message.content
 
-# Start FastAPI App
+# Start Memory-garden App
 app = FastAPI(title="Memory Garden FastAPI", description="Accepts image input and returns a description of the image using the Ollama LLaVA model.", version="0.1.0")
 
 # Create upload directory for storing uploaded photos

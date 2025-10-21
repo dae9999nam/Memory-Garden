@@ -4,8 +4,11 @@ npm-debug.log*
 .DS_Store
 .venv
 __pycache__
-FastAPI App/uploads/
-FastAPI App/__pycache__/
+memory-garden/uploads/
+memory-garden/audio/
+memory-garden/data/
+
+memory-garden/__pycache__/
 .pyc
 docs/
 
