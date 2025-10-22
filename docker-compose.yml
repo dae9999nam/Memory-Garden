@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+  memory-garden-api:
+    build:
+      context: ./memory-garden
+    image: memory-garden-fastapi
+    container_name: memory-garden-api
+    ports:
+      - "8001:8001"
+    environment:
+      MONGODB_URI: mongodb://mongo:27017
+      MONGODB_DB_NAME: community_platform
+      MONGODB_COLLECTION_NAME: stories
+      OLLAMA_HOST: http://ollama:11434
+    volumes:
+      - ./memory-garden/uploads:/app/uploads
+      - ./memory-garden/data:/app/data
+      - ./memory-garden/audio:/app/audio
+    depends_on:
+      - ollama
+      - mongo
+    networks:
+      - memory-garden
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - memory-garden
+
+  db:
+    image: mongo:latest
+    container_name: mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: community_platform
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - memory-garden
+
+volumes:
+  mongo-data:
+  ollama-data:
+
+networks:
+  memory-garden:
+    driver: bridge
