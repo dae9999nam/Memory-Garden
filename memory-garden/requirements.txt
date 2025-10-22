@@ -5,3 +5,4 @@ ollama
 python-multipart
 googletrans
 gtts
+pymongo
