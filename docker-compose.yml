@@ -1,10 +1,8 @@
-version: "3.9"
-
 services:
   memory-garden-api:
     build:
       context: ./memory-garden
-    image: memory-garden-fastapi
+    image: memory-garden-api
     container_name: memory-garden-api
     ports:
       - "8001:8001"
@@ -34,7 +32,7 @@ services:
     networks:
       - memory-garden
 
-  db:
+  mongo:
     image: mongo:latest
     container_name: mongo
     restart: unless-stopped

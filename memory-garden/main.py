@@ -22,9 +22,6 @@ from googletrans import Translator
 # Text-to-speech (TTS)
 from gtts import gTTS
 # BSON ObjectId handling
-from bson import ObjectId
-# BSON InvalidId exception
-from bson.errors import InvalidId
 from pymongo.collection import Collection
 import importlib.util
 
@@ -71,7 +68,7 @@ AUDIO_DIR.mkdir(exist_ok=True, parents=True)
 def _load_elder_db() -> type:
     module_path = (
         Path(__file__).resolve().parents[1]
-        / "Backend"
+        / "DB"
         / "backend"
         / "agents"
         / "utils"
@@ -215,23 +212,11 @@ class StoryRepository:
     def __init__(self, collection: Collection) -> None:
         self._collection = collection
 
-    # Read all stories from the JSON file
-    # def _read_all(self) -> List[dict]:
-    #     if not self._storage_path.exists():
-    #         return []
-    #     raw = self._storage_path.read_text(encoding="utf-8")
-    #     if not raw.strip():
-    #         return []
-    #     return json.loads(raw)
-    # # Write all stories to the JSON file atomically
-    # def _write_all(self, data: List[dict]) -> None:
-    #     temp_path = self._storage_path.with_suffix(".tmp")
-    #     temp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    #     temp_path.replace(self._storage_path)
-    # Serialize and deserialize StoryRecord objects to/from dicts for JSON storage
     def _serialize(self, record: StoryRecord) -> dict:
         payload = record.model_dump(mode="python", exclude_none=True)
-        payload.pop("id", None)  # Remove id if None
+        record_id = payload.pop("id", None)  # Remove id if None
+        if record_id is not None:
+            payload["_id"] = record_id
         return payload
     # Deserialize a dict to a StoryRecord object
     def _deserialize(self, payload: dict) -> StoryRecord:
@@ -240,31 +225,16 @@ class StoryRepository:
         if mongo_id is not None:
             data["id"] = str(mongo_id)
         return StoryRecord(**data)
-    # add a new story to the repository
-    # def add(self, record: StoryRecord) -> StoryResponse:
-    #     serialized = self._serialize(record)
-    #     with self._lock:
-    #         data = self._read_all()
-    #         data.append(serialized)
-    #         self._write_all(data)
-    #     return record
-    # # List all stored stories
-    # def list(self) -> List[StoryRecord]:
-    #     with self._lock:
-    #         data = self._read_all()
-    #     return [self._deserialize(item) for item in data]
-    # # Get a specific story by ID
-    # def get(self, story_id: str) -> Optional[StoryRecord]:
-    #     with self._lock:
-    #         data = self._read_all()
-    #     for item in data:
-    #         if item.get("id") == story_id:
-    #             return self._deserialize(item)
-    #     return None
+    
     async def add(self, record: StoryRecord) -> StoryRecord:
         def _insert() -> str:
-            result = self._collection.insert_one(self._serialize(record))
-            return str(result.inserted_id)
+            serialized = self._serialize(record)
+            record_id = serialized.get("_id")
+            if not record_id:
+                record_id = uuid4().hex
+                serialized["_id"] = record_id
+            self._collection.insert_one(serialized)
+            return str(record_id)
         inserted_id = await run_in_threadpool(_insert)
         return record.model_copy(update={"id": inserted_id})
     # List all stored stories
@@ -276,26 +246,23 @@ class StoryRepository:
 
     # Get a specific story by ID
     async def get(self, story_id: str) -> Optional[StoryRecord]:
-        try:
-            object_id = ObjectId(story_id)
-        except (InvalidId, TypeError):
+        if not story_id:
             return None
-        document = await run_in_threadpool(self._collection.find_one, {"_id": object_id})
+        document = await run_in_threadpool(self._collection.find_one, {"_id": story_id})
         if not document:
             return None
         return self._deserialize(document)
+    
     # Update an existing story
     async def update(self, record: StoryRecord) -> None:
         if not record.id:
             raise KeyError("Story ID is required for update")
-        try:
-            object_id = ObjectId(record.id)
-        except InvalidId as exc:
-            raise KeyError("Story ID is invalid") from exc
+        serialized = self._serialize(record)
+        serialized.setdefault("_id", record.id)
         result = await run_in_threadpool(
             self._collection.replace_one,
-            {"_id": object_id},
-            self._serialize(record),
+            {"_id": record.id},
+            serialized,
             upsert=False,
         )
         if result.matched_count == 0:
@@ -303,17 +270,6 @@ class StoryRepository:
     
     async def ensure_indexes(self) -> None:
         await run_in_threadpool(self._collection.create_index, "created_at")
-    
-    # def update(self, record: StoryRecord) -> None:
-    #     serialized = self._serialize(record)
-    #     with self._lock:
-    #         data = self._read_all()
-    #         for index, item in enumerate(data):
-    #             if item.get("id") == record.id:
-    #                 data[index] = serialized
-    #                 self._write_all(data)
-    #                 return
-    #     raise KeyError(f"Story {record.id} not found")
 
 # Initialize the story repository
 story_collection = elder_db.connect_collection(db_name=MONGODB_DB_NAME, collection_name=MONGODB_COLLECTION_NAME)
