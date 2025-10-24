@@ -6,3 +6,4 @@ python-multipart
 googletrans
 gtts
 pymongo
+python-dotenv
