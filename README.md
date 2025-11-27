@@ -20,8 +20,8 @@ _A comprehensive FastAPI service that turns your photos into vivid narratives us
 My Team Mingle #1101 has been nominated as Finalist in the Hackathon !!
 
     
-![Finalist](image/Finalist.png)
-![Finalist List](image/Finalist_list.png)
+![Finalist](image/finalist.png)
+![Finalist List](image/finalist_list.png)
 
 ### Major Architecture Changes
 
