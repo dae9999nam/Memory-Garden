@@ -14,8 +14,13 @@ _A comprehensive FastAPI service that turns your photos into vivid narratives us
 
 ---
 
-## 🔄 Recent Updates - MongoDB Integration
+## 🔄 Recent Updates - MongoDB Integration And Nomiated as Finalist for 2025 Inter-University GenAI Hackathon
 
+### 2025 Inter-University GenAI Hacakthon 🏆Finalist🏆
+My Team Mingle #1101 has been nominated as Finalist in the Hackathon !!
+<div align="center">
+![Finalist List]
+</div>
 ### Major Architecture Changes
 
 Your Memory Garden FastAPI has been upgraded from JSON file storage to a **production-ready MongoDB backend** with significant improvements:
