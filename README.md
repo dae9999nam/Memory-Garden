@@ -18,10 +18,11 @@ _A comprehensive FastAPI service that turns your photos into vivid narratives us
 
 ### 2025 Inter-University GenAI Hacakthon 🏆Finalist🏆
 My Team Mingle #1101 has been nominated as Finalist in the Hackathon !!
-<div align="center">
-    ![Finalist](image/Finalist.png)
-    ![Finalist List](image/Finalist_list.png)
-</div>
+
+    
+![Finalist](image/Finalist.png)
+![Finalist List](image/Finalist_list.png)
+
 ### Major Architecture Changes
 
 Your Memory Garden FastAPI has been upgraded from JSON file storage to a **production-ready MongoDB backend** with significant improvements:
