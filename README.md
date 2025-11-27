@@ -19,7 +19,8 @@ _A comprehensive FastAPI service that turns your photos into vivid narratives us
 ### 2025 Inter-University GenAI Hacakthon 🏆Finalist🏆
 My Team Mingle #1101 has been nominated as Finalist in the Hackathon !!
 <div align="center">
-![Finalist List]
+    ![Finalist](Image/Finalist.png)
+    ![Finalist List](Image/Finalist_list.png)
 </div>
 ### Major Architecture Changes
 
